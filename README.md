@@ -25,7 +25,3 @@ python voice_intent_eval.py --parser rule --limit 5 --record-seconds 2.5
 ```
 
 真实控制机器人前，请确认 Go2 与电脑在同一网络，SSH 和 Unitree SDK 环境可用，并保证机器人处于安全可控状态。
-
-## GitHub 提交说明
-
-提交前请参考 [GITHUB_PUSH清单.md](GITHUB_PUSH清单.md)。虚拟环境、录音、日志、缓存和本地配置不应提交。
