@@ -1,0 +1,42 @@
+# Python cache/build outputs
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local editor/system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Runtime recordings, logs, and generated reports
+*.wav
+*.mp3
+*.log
+*.jsonl
+
+# Large/generated third-party build outputs
+unitree_sdk2_python/venv/
+unitree_sdk2_python/cyclonedds/build/
+unitree_sdk2_python/cyclonedds/install/
+
+# MuJoCo local generated files
+unitree_mujoco/**/build/
+unitree_mujoco/**/install/
+unitree_mujoco/**/log/
+unitree_mujoco/simulate/mujoco

@@ -1,0 +1,102 @@
+import time
+
+from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+from unitree_sdk2py.go2.sport.sport_client import SportClient
+
+
+DEFAULT_MOVEMENT_DURATION_SECONDS = 0.8
+MAX_MOVEMENT_DURATION_SECONDS = 1.0
+
+
+def clamp_movement_duration(duration):
+    duration = DEFAULT_MOVEMENT_DURATION_SECONDS if duration is None else float(duration)
+    return max(0.1, min(duration, MAX_MOVEMENT_DURATION_SECONDS))
+
+
+class RobotController:
+    def __init__(self, network_interface):
+        print("Initializing Unitree high-level SDK...")
+        print(f"Network interface: {network_interface}")
+
+        ChannelFactoryInitialize(0, network_interface)
+
+        self.sport_client = SportClient()
+        self.sport_client.SetTimeout(10.0)
+        self.sport_client.Init()
+
+        print("RobotController initialized.")
+
+    def stop(self):
+        print("[RobotController] STOP")
+        ret = self.sport_client.StopMove()
+        print("[RobotController] StopMove ret:", ret)
+        return ret
+
+    def stand_up(self):
+        print("[RobotController] STAND UP")
+        ret = self.sport_client.StandUp()
+        print("[RobotController] StandUp ret:", ret)
+        return ret
+
+    def stand_down(self):
+        print("[RobotController] STAND DOWN")
+        ret = self.sport_client.StandDown()
+        print("[RobotController] StandDown ret:", ret)
+        return ret
+
+    def balance_stand(self):
+        print("[RobotController] BALANCE STAND")
+        ret = self.sport_client.BalanceStand()
+        print("[RobotController] BalanceStand ret:", ret)
+        return ret
+
+    def recovery_stand(self):
+        print("[RobotController] RECOVERY STAND")
+        ret = self.sport_client.RecoveryStand()
+        print("[RobotController] RecoveryStand ret:", ret)
+        return ret
+
+    def move_short(self, vx, vy, vyaw, duration=0.5):
+        print(f"[RobotController] Move vx={vx}, vy={vy}, vyaw={vyaw}, duration={duration}")
+        self.balance_stand()
+        time.sleep(0.5)
+        ret = self.sport_client.Move(vx, vy, vyaw)
+        print("[RobotController] Move ret:", ret)
+        time.sleep(duration)
+        self.stop()
+        return ret
+
+    def execute_command(self, command, duration=None):
+        movement_duration = clamp_movement_duration(duration)
+
+        if command == "stop":
+            self.stop()
+
+        elif command == "stand_up":
+            print("standup received")
+            self.stand_up()
+
+        elif command == "stand_down":
+            self.stand_down()
+
+        elif command == "balance":
+            self.balance_stand()
+
+        elif command == "recovery":
+            self.recovery_stand()
+
+        elif command == "forward":
+            print("forward command received")
+            self.move_short(0.3, 0.0, 0.0, duration=movement_duration)
+
+        elif command == "backward":
+            self.move_short(-0.3, 0.0, 0.0, duration=movement_duration)
+
+        elif command == "turn_left":
+            self.move_short(0.0, 0.0, 0.7, duration=movement_duration)
+
+        elif command == "turn_right":
+            self.move_short(0.0, 0.0, -0.7, duration=movement_duration)
+
+        else:
+            print("[RobotController] Unknown command. Doing nothing.")
