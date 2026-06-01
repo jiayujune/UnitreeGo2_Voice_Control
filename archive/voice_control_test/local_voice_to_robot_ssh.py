@@ -1,19 +1,17 @@
 import argparse
-import csv
 import json
 import os
 import shutil
 import time
 import urllib.error
 import urllib.request
+import wave
 import subprocess
 from datetime import datetime, timezone
 
-from audio_pipeline import SileroVADRecorder, record_fixed_duration
 from intent_parser import clean_text, parse_intent
 from llm_intent_parser import get_provider_config, parse_intent_with_llm
 from task_planner import plan_from_intent
-from transcriber import build_transcriber
 
 
 ROBOT_SSH = "unitree@192.168.1.200"
@@ -24,19 +22,11 @@ NETWORK_INTERFACE = "eth0"
 
 AUDIO_FILE = "local_command.wav"
 COMMAND_LOG_FILE = "voice_command_log.jsonl"
-COMMAND_CSV_LOG_FILE = "voice_command_log.csv"
 MODEL_NAME = "base"
 RECORD_SECONDS = 5
 SAMPLE_RATE = 16000
-STT_LANGUAGE = "en"
 SPEECH_COMMAND = "spd-say"
 PRE_COMMAND_SPEECH_DELAY_SECONDS = 1.0
-ROBOT_COMMAND_STT_PROMPT = (
-    "The speaker will say one robot command or high-level request: "
-    "go two stop, go two balance, go two stand up, go two stand down, "
-    "go two recovery, go two forward, go two back, go two left, go two right, "
-    "I am hungry, find food, find the apple."
-)
 CHAT_SYSTEM_PROMPT = """
 You are Go2, a friendly quadruped robot dog talking through a speaker.
 Reply naturally to casual conversation in one or two short sentences.
@@ -131,11 +121,29 @@ def robot_action_label(command):
 
 
 def record_audio():
-    return record_fixed_duration(
-        AUDIO_FILE,
-        seconds=RECORD_SECONDS,
-        sample_rate=SAMPLE_RATE,
+    import numpy as np
+    import sounddevice as sd
+
+    print(f"\nRecording from COMPUTER microphone for {RECORD_SECONDS:g} seconds...")
+    print("Say one command, for example: go two stop")
+
+    audio = sd.rec(
+        int(RECORD_SECONDS * SAMPLE_RATE),
+        samplerate=SAMPLE_RATE,
+        channels=1,
+        dtype="int16",
     )
+    sd.wait()
+
+    audio = np.asarray(audio)
+
+    with wave.open(AUDIO_FILE, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(audio.tobytes())
+
+    print("Recording finished:", AUDIO_FILE)
 
 
 def log_intent_event(
@@ -146,9 +154,8 @@ def log_intent_event(
     dry_run=False,
     parser_mode="rule",
 ):
-    timestamp = datetime.now(timezone.utc).isoformat()
     event = {
-        "timestamp": timestamp,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "transcript": text,
         "cleaned_text": clean_text(text),
         "intent": intent,
@@ -160,32 +167,6 @@ def log_intent_event(
 
     with open(COMMAND_LOG_FILE, "a", encoding="utf-8") as log_file:
         log_file.write(json.dumps(event, ensure_ascii=False) + "\n")
-
-    csv_exists = os.path.exists(COMMAND_CSV_LOG_FILE)
-    csv_row = {
-        "timestamp": timestamp,
-        "transcript": text,
-        "cleaned_text": clean_text(text),
-        "intent": intent.get("intent"),
-        "action": intent.get("action"),
-        "target": intent.get("target", ""),
-        "duration": intent.get("duration", 0.0),
-        "executable": intent.get("executable", False),
-        "need_confirmation": intent.get("need_confirmation", False),
-        "parser": intent.get("parser", parser_mode),
-        "llm_provider": intent.get("llm_provider", ""),
-        "llm_model": intent.get("llm_model", ""),
-        "sent_to_robot": sent_to_robot,
-        "sent_command": sent_command or "",
-        "dry_run": dry_run,
-        "reason": intent.get("reason", ""),
-    }
-
-    with open(COMMAND_CSV_LOG_FILE, "a", encoding="utf-8", newline="") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=list(csv_row.keys()))
-        if not csv_exists:
-            writer.writeheader()
-        writer.writerow(csv_row)
 
 
 def send_command_to_robot(command, duration=0.0):
@@ -211,29 +192,6 @@ def parse_with_mode(text, parser_mode, llm_provider=None, llm_model=None):
     intent = parse_intent(text)
     intent["parser"] = "rule"
     return intent
-
-
-def capture_audio(args, vad_recorder=None):
-    if args.input_mode == "vad":
-        if vad_recorder is None:
-            vad_recorder = SileroVADRecorder(
-                sample_rate=SAMPLE_RATE,
-                threshold=args.vad_threshold,
-                min_speech_ms=args.vad_min_speech_ms,
-                silence_ms=args.vad_silence_ms,
-            )
-
-        result = vad_recorder.record_until_speech_ends(
-            AUDIO_FILE,
-            max_seconds=args.max_listen_seconds,
-            start_timeout_seconds=args.vad_start_timeout,
-        )
-        if not result["speech_detected"]:
-            print("Skipping transcription because no speech was detected.")
-            return None
-        return AUDIO_FILE
-
-    return record_audio()
 
 
 def chat_completions_url(base_url):
@@ -433,73 +391,12 @@ def parse_args():
         default="computer",
         help="Where spoken replies should play.",
     )
-    parser.add_argument(
-        "--robot-speaker-url",
-        help=f"Robot speaker server URL. Default: {ROBOT_SPEAKER_URL}",
-    )
-    parser.add_argument(
-        "--input-mode",
-        choices=["fixed", "vad"],
-        default="fixed",
-        help="Use fixed-length recording or Silero VAD speech segmentation.",
-    )
-    parser.add_argument(
-        "--stt",
-        choices=["local", "openai", "groq"],
-        default="local",
-        help="Speech-to-text backend: local Whisper, OpenAI Whisper API, or Groq Whisper API.",
-    )
-    parser.add_argument(
-        "--stt-model",
-        help="Whisper model name. Defaults to base for local STT and whisper-1 for OpenAI STT.",
-    )
-    parser.add_argument(
-        "--record-seconds",
-        type=float,
-        default=RECORD_SECONDS,
-        help="Seconds to record in fixed input mode.",
-    )
-    parser.add_argument(
-        "--max-listen-seconds",
-        type=float,
-        default=8.0,
-        help="Maximum seconds to listen in VAD input mode.",
-    )
-    parser.add_argument(
-        "--vad-start-timeout",
-        type=float,
-        default=5.0,
-        help="Seconds to wait for speech to start in VAD input mode.",
-    )
-    parser.add_argument(
-        "--vad-threshold",
-        type=float,
-        default=0.5,
-        help="Silero VAD speech threshold.",
-    )
-    parser.add_argument(
-        "--vad-silence-ms",
-        type=int,
-        default=800,
-        help="Silence after speech before VAD recording stops.",
-    )
-    parser.add_argument(
-        "--vad-min-speech-ms",
-        type=int,
-        default=250,
-        help="Minimum speech duration required before transcribing a VAD clip.",
-    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     speech_output = "off" if args.no_speech else args.speech_output
-    global RECORD_SECONDS
-    global ROBOT_SPEAKER_URL
-    RECORD_SECONDS = args.record_seconds
-    if args.robot_speaker_url:
-        ROBOT_SPEAKER_URL = args.robot_speaker_url
 
     if args.text:
         process_transcript(
@@ -513,39 +410,42 @@ def main():
         )
         return
 
-    transcriber = build_transcriber(
-        args.stt,
-        model_name=args.stt_model,
-        language=STT_LANGUAGE,
-    )
-    vad_recorder = None
-    if args.input_mode == "vad":
-        vad_recorder = SileroVADRecorder(
-            sample_rate=SAMPLE_RATE,
-            threshold=args.vad_threshold,
-            min_speech_ms=args.vad_min_speech_ms,
-            silence_ms=args.vad_silence_ms,
-        )
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+    import whisper
+
+    print("Loading Whisper model on COMPUTER...")
+    model = whisper.load_model(MODEL_NAME, device="cpu")
+    print("Model loaded.")
 
     if args.dry_run:
-        print(f"\nComputer microphone -> {args.input_mode} capture -> {args.stt} STT -> intent JSON")
+        print("\nComputer microphone -> local Whisper -> intent JSON")
         print("DRY RUN MODE: no SSH commands will be sent.")
     else:
-        print(f"\nComputer microphone -> {args.input_mode} capture -> {args.stt} STT -> SSH -> robot")
+        print("\nComputer microphone -> local Whisper -> SSH -> robot")
 
     print("Press Ctrl+C to quit.")
 
     while True:
-        input("\nPress Enter to listen for a command...")
+        input("\nPress Enter to record a command...")
 
-        audio_path = capture_audio(args, vad_recorder=vad_recorder)
-        if audio_path is None:
-            continue
+        record_audio()
 
-        text = transcriber.transcribe(
-            audio_path,
-            prompt=ROBOT_COMMAND_STT_PROMPT,
+        result = model.transcribe(
+            AUDIO_FILE,
+            language="en",
+            fp16=False,
+            temperature=0,
+            condition_on_previous_text=False,
+            initial_prompt=(
+                "The speaker will say one robot command: "
+                "go two stop, go two balance, go two stand up, "
+                "go two stand down, go two recovery, go two forward, "
+                "go two back, go two left, go two right."
+            ),
         )
+
+        text = result["text"]
         process_transcript(
             text,
             dry_run=args.dry_run,

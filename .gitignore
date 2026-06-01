@@ -29,14 +29,21 @@ Thumbs.db
 *.mp3
 *.log
 *.jsonl
+*.csv
+runtime/*
+!runtime/.gitkeep
+
+# Local copies of large third-party projects.
+external/*
+!external/README.md
 
 # Large/generated third-party build outputs
-unitree_sdk2_python/venv/
-unitree_sdk2_python/cyclonedds/build/
-unitree_sdk2_python/cyclonedds/install/
+external/unitree_sdk2_python/venv/
+external/unitree_sdk2_python/cyclonedds/build/
+external/unitree_sdk2_python/cyclonedds/install/
 
 # MuJoCo local generated files
-unitree_mujoco/**/build/
-unitree_mujoco/**/install/
-unitree_mujoco/**/log/
-unitree_mujoco/simulate/mujoco
+external/unitree_mujoco/**/build/
+external/unitree_mujoco/**/install/
+external/unitree_mujoco/**/log/
+external/unitree_mujoco/simulate/mujoco

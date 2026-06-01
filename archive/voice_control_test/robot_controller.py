@@ -1,11 +1,4 @@
 import time
-import sys
-from pathlib import Path
-
-
-SDK_DIR = Path(__file__).resolve().parents[1] / "external" / "unitree_sdk2_python"
-if SDK_DIR.exists() and str(SDK_DIR) not in sys.path:
-    sys.path.insert(0, str(SDK_DIR))
 
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py.go2.sport.sport_client import SportClient
