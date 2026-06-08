@@ -61,6 +61,30 @@ Output example:
 }
 ```
 
+## Evaluate
+
+Benchmark VAD and speaker identification on a labeled dataset, and calibrate the
+matching threshold (instead of hand-setting it):
+
+```bash
+python -m Speaker_Recognition.evaluate <dataset> --threshold 0.82 --json report.json
+python -m Speaker_Recognition.evaluate --demo   # synthetic self-test, no data needed
+```
+
+Expected dataset layout (all parts optional):
+
+```text
+<dataset>/
+  enroll/<speaker_id>/*.wav     enrollment clips, one folder per speaker
+  test/<speaker_id>/*.wav       test clips for known (enrolled) speakers
+  test/unknown/*.wav            out-of-set speakers -> should be rejected
+  vad/speech/*.wav              clips that ARE speech
+  vad/nonspeech/*.wav           silence / noise -> NOT speech
+```
+
+It reports VAD precision/recall/F1, closed-set top-1 accuracy, open-set EER, and a
+threshold sweep (accuracy / FAR / FRR) with a recommended threshold.
+
 ## API
 
 ```python

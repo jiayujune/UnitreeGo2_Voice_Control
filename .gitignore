@@ -47,3 +47,11 @@ external/unitree_mujoco/**/build/
 external/unitree_mujoco/**/install/
 external/unitree_mujoco/**/log/
 external/unitree_mujoco/simulate/mujoco
+
+# Local audio recording venv
+.venv-audio/
+
+# Generated evaluation / metrics reports and local profiles/datasets
+*_report.json
+Speaker_Recognition/speaker_profiles.json
+Speaker_Recognition/dataset/

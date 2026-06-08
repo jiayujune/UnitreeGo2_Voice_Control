@@ -145,8 +145,10 @@ def log_intent_event(
     sent_command=None,
     dry_run=False,
     parser_mode="rule",
+    timings=None,
 ):
     timestamp = datetime.now(timezone.utc).isoformat()
+    timings = timings or {}
     event = {
         "timestamp": timestamp,
         "transcript": text,
@@ -156,6 +158,9 @@ def log_intent_event(
         "sent_command": sent_command,
         "dry_run": dry_run,
         "parser_mode": parser_mode,
+        "stt_ms": timings.get("stt_ms"),
+        "parse_ms": timings.get("parse_ms"),
+        "total_ms": timings.get("total_ms"),
     }
 
     with open(COMMAND_LOG_FILE, "a", encoding="utf-8") as log_file:
@@ -179,6 +184,9 @@ def log_intent_event(
         "sent_command": sent_command or "",
         "dry_run": dry_run,
         "reason": intent.get("reason", ""),
+        "stt_ms": timings.get("stt_ms"),
+        "parse_ms": timings.get("parse_ms"),
+        "total_ms": timings.get("total_ms"),
     }
 
     with open(COMMAND_CSV_LOG_FILE, "a", encoding="utf-8", newline="") as csv_file:
@@ -284,8 +292,16 @@ def process_transcript(
     llm_model=None,
     show_plan=False,
     speech_output="computer",
+    stt_ms=None,
 ):
+    parse_start = time.perf_counter()
     intent = parse_with_mode(text, parser_mode, llm_provider, llm_model)
+    parse_ms = (time.perf_counter() - parse_start) * 1000.0
+    timings = {
+        "stt_ms": round(stt_ms, 1) if stt_ms is not None else None,
+        "parse_ms": round(parse_ms, 1),
+        "total_ms": round((stt_ms or 0.0) + parse_ms, 1),
+    }
     command = intent.get("action", "none")
 
     print("\nWhisper recognized / input text:")
@@ -329,6 +345,7 @@ def process_transcript(
             sent_to_robot=False,
             dry_run=dry_run,
             parser_mode=parser_mode,
+            timings=timings,
         )
         return
 
@@ -345,6 +362,7 @@ def process_transcript(
             sent_command=command,
             dry_run=True,
             parser_mode=parser_mode,
+            timings=timings,
         )
         return
 
@@ -359,6 +377,7 @@ def process_transcript(
                 sent_to_robot=False,
                 dry_run=False,
                 parser_mode=parser_mode,
+                timings=timings,
             )
             return
 
@@ -372,6 +391,7 @@ def process_transcript(
             sent_command=command,
             dry_run=False,
             parser_mode=parser_mode,
+            timings=timings,
         )
         return
 
@@ -386,6 +406,7 @@ def process_transcript(
         sent_command=command,
         dry_run=False,
         parser_mode=parser_mode,
+        timings=timings,
     )
 
 
@@ -542,10 +563,12 @@ def main():
         if audio_path is None:
             continue
 
+        stt_start = time.perf_counter()
         text = transcriber.transcribe(
             audio_path,
             prompt=ROBOT_COMMAND_STT_PROMPT,
         )
+        stt_ms = (time.perf_counter() - stt_start) * 1000.0
         process_transcript(
             text,
             dry_run=args.dry_run,
@@ -554,6 +577,7 @@ def main():
             llm_model=args.llm_model,
             show_plan=args.show_plan,
             speech_output=speech_output,
+            stt_ms=stt_ms,
         )
 
 

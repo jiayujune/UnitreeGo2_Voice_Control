@@ -42,4 +42,20 @@ python3 tools/vad_cut.py --input runtime/test.wav --output runtime/speech_segmen
 python3 tools/whisper_local_test.py --input runtime/speech_segment.wav
 ```
 
+## 指标统计
+
+流水线已记录每条指令的分阶段耗时(STT / 意图解析 / 总时延)。从日志统计时延与指令映射成功率:
+
+```bash
+cd voice_control_essential
+python3 pipeline_metrics.py voice_command_log.jsonl
+```
+
+说话人识别模块的评测(VAD 精确率/召回率、说话人 top-1、EER、阈值标定):
+
+```bash
+python3 -m Speaker_Recognition.evaluate <dataset>
+python3 -m Speaker_Recognition.evaluate --demo   # 合成自测,无需数据
+```
+
 虚拟环境、录音、日志、缓存和本地配置不应提交。
