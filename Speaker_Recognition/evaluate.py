@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from .audio_io import read_wav, write_wav
-from .features import speaker_embedding, cosine_similarity
+from .embedders import get_embedder
 from .recognizer import SpeakerRecognizer
 from .vad import VoiceActivityDetector
 
@@ -181,7 +181,11 @@ def evaluate_identification(recognizer, dataset, enrolled, sweep_points=21):
     )
     top1 = top1_correct / len(known_rows) if known_rows else None
 
-    points = np.linspace(0.0, 1.0, sweep_points)
+    # Derive sweep thresholds from the actual score range (cosine scores often
+    # cluster in a narrow band, so a fixed 0..1 grid would miss the useful region).
+    all_scores = [sc for _, scores in rows for sc in scores.values()]
+    lo, hi = (min(all_scores), max(all_scores)) if all_scores else (0.0, 1.0)
+    points = np.linspace(lo, hi, sweep_points)
     table, genuine, impostor = threshold_sweep(rows, set(enrolled), points)
     eer = compute_eer(genuine, impostor)
     best_acc = max(table, key=lambda r: r["accuracy"]) if table else None
@@ -268,12 +272,15 @@ def _build_demo_dataset(root: Path):
 
 
 # --------------------------------------------------------------------------- #
-def run(dataset: Path, threshold: float):
+def run(dataset: Path, threshold: float, encoder: str = "mfcc"):
     vad = VoiceActivityDetector()
-    recognizer = SpeakerRecognizer(dataset / "_eval_profiles.json", threshold=threshold, vad=vad)
+    embed_fn = get_embedder(encoder)
+    recognizer = SpeakerRecognizer(
+        dataset / "_eval_profiles.json", threshold=threshold, vad=vad, embed_fn=embed_fn
+    )
     recognizer.profiles = {}  # start clean each run
 
-    report = {"dataset": str(dataset), "threshold": threshold}
+    report = {"dataset": str(dataset), "threshold": threshold, "encoder": encoder}
     report["vad"] = evaluate_vad(vad, dataset)
     enrolled = enroll_speakers(recognizer, dataset)
     report["enrolled_speakers"] = enrolled
@@ -292,6 +299,8 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate the Speaker Recognition module.")
     parser.add_argument("dataset", nargs="?", help="Path to the evaluation dataset directory.")
     parser.add_argument("--threshold", type=float, default=0.82)
+    parser.add_argument("--encoder", choices=["mfcc", "resemblyzer"], default="mfcc",
+                        help="Speaker embedding model.")
     parser.add_argument("--json", help="Optional path to write the full report as JSON.")
     parser.add_argument("--demo", action="store_true",
                         help="Build a synthetic dataset and self-test (no real data needed).")
@@ -301,7 +310,7 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _build_demo_dataset(root)
-            report = run(root, args.threshold)
+            report = run(root, args.threshold, args.encoder)
             print_report(report)
             if args.json:
                 Path(args.json).write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -313,7 +322,7 @@ def main():
     if not dataset.is_dir():
         parser.error(f"dataset directory not found: {dataset}")
 
-    report = run(dataset, args.threshold)
+    report = run(dataset, args.threshold, args.encoder)
     print_report(report)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=2), encoding="utf-8")

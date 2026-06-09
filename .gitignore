@@ -55,3 +55,5 @@ external/unitree_mujoco/simulate/mujoco
 *_report.json
 Speaker_Recognition/speaker_profiles.json
 Speaker_Recognition/dataset/
+Speaker_Recognition/_data/
+Speaker_Recognition/libri_dataset/

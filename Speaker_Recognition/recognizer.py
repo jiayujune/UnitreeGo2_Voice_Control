@@ -26,10 +26,13 @@ class RecognitionResult:
 
 
 class SpeakerRecognizer:
-    def __init__(self, profile_path="speaker_profiles.json", threshold=0.82, vad=None):
+    def __init__(self, profile_path="speaker_profiles.json", threshold=0.82, vad=None, embed_fn=None):
         self.profile_path = Path(profile_path)
         self.threshold = threshold
         self.vad = vad or VoiceActivityDetector()
+        # Pluggable embedder: defaults to the MFCC-statistics embedding, but a
+        # deep speaker encoder can be swapped in behind the same interface.
+        self.embed_fn = embed_fn or speaker_embedding
         self.profiles = {}
         if self.profile_path.exists():
             self.load()
@@ -69,7 +72,7 @@ class SpeakerRecognizer:
         if not vad_result.is_speech:
             raise ValueError("No speech detected in enrollment audio.")
 
-        embedding = speaker_embedding(vad_result.voiced_audio, sample_rate)
+        embedding = self.embed_fn(vad_result.voiced_audio, sample_rate)
         existing = self.profiles.get(speaker_id)
         if existing:
             count = existing.sample_count + 1
@@ -95,7 +98,7 @@ class SpeakerRecognizer:
         if not self.profiles:
             return RecognitionResult(True, None, 0.0, {}, vad_result.segments)
 
-        embedding = speaker_embedding(vad_result.voiced_audio, sample_rate)
+        embedding = self.embed_fn(vad_result.voiced_audio, sample_rate)
         scores = {
             speaker_id: cosine_similarity(embedding, profile.embedding)
             for speaker_id, profile in self.profiles.items()
