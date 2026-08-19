@@ -291,7 +291,7 @@ def _stop_tracking():
 app = FastAPI(title="Go2 Vision Server")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-VR_HTML = Path(__file__).parent / "vr_controller.html"
+VR_HTML = Path(__file__).resolve().parents[1] / "vr_control" / "vr_controller.html"
 
 
 @app.get("/vr")
