@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Go2 VR Control</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117; color: #e6edf3; font-family: system-ui, sans-serif;
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; min-height: 100vh; gap: 20px; padding: 20px;
+    }
+    h1 { font-size: 1.4rem; font-weight: 600; }
+    #preview {
+      width: 100%; max-width: 640px; border: 1px solid #30363d; border-radius: 6px;
+      background: #161b22;
+    }
+    #vr-btn {
+      padding: 12px 32px; font-size: 1rem; font-weight: 600;
+      background: #1B6EF3; color: #fff; border: none; border-radius: 6px;
+      cursor: pointer; transition: background 0.15s;
+    }
+    #vr-btn:hover:not(:disabled) { background: #1459c8; }
+    #vr-btn:disabled { background: #30363d; color: #8b949e; cursor: default; }
+    #status { font-size: 0.82rem; color: #8b949e; text-align: center; }
+    #controls { font-size: 0.78rem; color: #6e7681; text-align: center; line-height: 1.8; }
+    canvas { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Go2 VR Camera Control</h1>
+  <img id="preview" src="/video_feed" alt="Robot camera feed">
+  <button id="vr-btn" disabled>Checking VR…</button>
+  <p id="status">Loading camera feed…</p>
+  <div id="controls">
+    VIVE trackpad: Up = Forward · Down = Backward · Left = Turn Left · Right = Turn Right
+  </div>
+  <canvas id="c"></canvas>
+
+<script>
+const MOVE_URL = 'http://localhost:8003/move';
+
+// ── WebGL init ──────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { xrCompatible: true });
+
+const VS = `#version 300 es
+in vec3 aPos; in vec2 aUV; uniform mat4 uMVP; out vec2 vUV;
+void main() { gl_Position = uMVP * vec4(aPos, 1.0); vUV = aUV; }`;
+
+const FS = `#version 300 es
+precision mediump float;
+in vec2 vUV; uniform sampler2D uTex; out vec4 o;
+void main() { o = texture(uTex, vUV); }`;
+
+function mkShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s); return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, mkShader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, mkShader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog); gl.useProgram(prog);
+
+// Quad in world space: 3m wide × 1.7m tall at z = -2.5m
+const W = 1.5, H = 0.85;
+const verts = new Float32Array([
+  -W, -H, -2.5,  0, 1,
+   W, -H, -2.5,  1, 1,
+  -W,  H, -2.5,  0, 0,
+   W,  H, -2.5,  1, 0,
+]);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+
+const STRIDE = 20;
+const aPos = gl.getAttribLocation(prog, 'aPos');
+const aUV  = gl.getAttribLocation(prog, 'aUV');
+gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, STRIDE, 0);
+gl.enableVertexAttribArray(aUV);  gl.vertexAttribPointer(aUV,  2, gl.FLOAT, false, STRIDE, 12);
+
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.uniform1i(gl.getUniformLocation(prog, 'uTex'), 0);
+const uMVP = gl.getUniformLocation(prog, 'uMVP');
+
+// ── Matrix multiply (column-major 4×4) ─────────────────────────────────────
+function m4mul(a, b) {
+  const o = new Float32Array(16);
+  for (let c = 0; c < 4; c++)
+    for (let r = 0; r < 4; r++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[k*4+r] * b[c*4+k];
+      o[c*4+r] = s;
+    }
+  return o;
+}
+
+// ── Offscreen canvas for reliable MJPEG frame capture ──────────────────────
+const offscreen = document.createElement('canvas');
+offscreen.width = 640; offscreen.height = 480;
+const ctx2d = offscreen.getContext('2d');
+const img = document.getElementById('preview');
+img.onload = () => {
+  offscreen.width  = img.naturalWidth  || 640;
+  offscreen.height = img.naturalHeight || 480;
+  document.getElementById('status').textContent = 'Camera connected. Click Enter VR.';
+};
+
+function uploadFrame() {
+  if (!img.complete || img.naturalWidth === 0) return;
+  ctx2d.drawImage(img, 0, 0, offscreen.width, offscreen.height);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  try {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, offscreen);
+  } catch(_) {}
+}
+
+// ── Robot movement ──────────────────────────────────────────────────────────
+let lastAction = '';
+let lastActionTime = 0;
+let isMoving = false;
+
+async function sendMove(action) {
+  const now = Date.now();
+  if (action === lastAction && now - lastActionTime < 450) return;
+  lastAction = action; lastActionTime = now;
+  fetch(MOVE_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, duration: 0.6 }),
+  }).catch(() => {});
+}
+
+async function sendStop() {
+  lastAction = 'stop';
+  fetch(MOVE_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'stop', duration: 0.1 }),
+  }).catch(() => {});
+}
+
+function pollControllers(session) {
+  let moved = false;
+  for (const src of session.inputSources) {
+    const gp = src.gamepad;
+    if (!gp) continue;
+    const x = gp.axes[0] ?? 0;
+    const y = gp.axes[1] ?? 0;
+    if (Math.abs(x) > 0.4 || Math.abs(y) > 0.4) {
+      moved = true;
+      if (Math.abs(y) >= Math.abs(x)) {
+        sendMove(y < 0 ? 'forward' : 'backward');
+      } else {
+        sendMove(x < 0 ? 'turn_left' : 'turn_right');
+      }
+    }
+  }
+  if (!moved && isMoving) sendStop();
+  isMoving = moved;
+}
+
+// ── WebXR ───────────────────────────────────────────────────────────────────
+const btn = document.getElementById('vr-btn');
+const statusEl = document.getElementById('status');
+let xrSession = null;
+
+(async () => {
+  if (!navigator.xr) {
+    statusEl.textContent = 'WebXR not available — open in Chromium with SteamVR running.';
+    return;
+  }
+  const ok = await navigator.xr.isSessionSupported('immersive-vr');
+  btn.disabled = false;
+  if (ok) {
+    btn.textContent = 'Enter VR';
+  } else {
+    btn.textContent = 'VR not supported';
+    btn.disabled = true;
+    statusEl.textContent = 'Start SteamVR first, then refresh this page.';
+  }
+})();
+
+btn.addEventListener('click', async () => {
+  if (xrSession) { xrSession.end(); return; }
+
+  try {
+    xrSession = await navigator.xr.requestSession('immersive-vr', {
+      requiredFeatures: ['local'],
+    });
+  } catch(e) {
+    statusEl.textContent = 'Could not start VR: ' + e.message;
+    return;
+  }
+
+  await gl.makeXRCompatible();
+  const layer = new XRWebGLLayer(xrSession, gl);
+  xrSession.updateRenderState({ baseLayer: layer });
+  const refSpace = await xrSession.requestReferenceSpace('local');
+
+  xrSession.addEventListener('end', () => {
+    xrSession = null;
+    btn.textContent = 'Enter VR';
+    statusEl.textContent = 'VR session ended.';
+    sendStop();
+  });
+
+  btn.textContent = 'Exit VR';
+  statusEl.textContent = 'In VR — use VIVE trackpad to move the robot';
+
+  function onXRFrame(t, frame) {
+    xrSession.requestAnimationFrame(onXRFrame);
+    pollControllers(xrSession);
+    uploadFrame();
+
+    const pose = frame.getViewerPose(refSpace);
+    if (!pose) return;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+    gl.clearColor(0.05, 0.05, 0.05, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+
+    for (const view of pose.views) {
+      const vp = layer.getViewport(view);
+      gl.viewport(vp.x, vp.y, vp.width, vp.height);
+      gl.uniformMatrix4fv(uMVP, false, m4mul(view.projectionMatrix, view.transform.inverse.matrix));
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+  }
+
+  xrSession.requestAnimationFrame(onXRFrame);
+});
+</script>
+</body>
+</html>

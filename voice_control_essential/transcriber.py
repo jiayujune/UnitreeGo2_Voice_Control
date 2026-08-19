@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import uuid
 import urllib.error
 import urllib.request
@@ -10,9 +11,58 @@ DEFAULT_LOCAL_WHISPER_MODEL = "base"
 DEFAULT_OPENAI_TRANSCRIPTION_MODEL = "whisper-1"
 DEFAULT_GROQ_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
 
+# Whisper (especially the small "base" model) emits these canned phrases when fed
+# silence or near-silence. In a robot-command context a transcript that is ONLY
+# one of these is virtually always noise, not a command — drop it so it does not
+# reach the parser, trigger a spoken reply, or pollute the metrics log.
+HALLUCINATION_PHRASES = {
+    "",
+    "you",
+    "thank you",
+    "thanks",
+    "thank you very much",
+    "thanks for watching",
+    "thank you for watching",
+    "please subscribe",
+    "subscribe",
+    "subscribe to my channel",
+    "bye",
+    "bye bye",
+    "goodbye",
+    "the end",
+}
+
 
 class TranscriptionError(Exception):
     pass
+
+
+def _normalize_for_hallucination_check(text: str) -> str:
+    text = text.strip().lower()
+    text = re.sub(r"[^a-z0-9'\s]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def is_likely_hallucination(text: str) -> bool:
+    """True if the whole transcript is a known Whisper silence-hallucination
+    phrase (matched on the full string, so a real command containing the word
+    is never discarded)."""
+    return _normalize_for_hallucination_check(text) in HALLUCINATION_PHRASES
+
+
+class HallucinationFilteringTranscriber:
+    """Wraps any transcriber and drops whole-transcript silence hallucinations,
+    returning an empty string so the caller can skip the turn."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def transcribe(self, audio_path, prompt=None):
+        text = self.inner.transcribe(audio_path, prompt=prompt)
+        if is_likely_hallucination(text):
+            print(f"Discarded likely silence hallucination from STT: {text!r}")
+            return ""
+        return text
 
 
 class LocalWhisperTranscriber:
@@ -142,11 +192,16 @@ class GroqWhisperAPITranscriber(OpenAIWhisperAPITranscriber):
         )
 
 
-def build_transcriber(stt_mode, model_name=None, language="en"):
+def build_transcriber(stt_mode, model_name=None, language="en", filter_hallucinations=True):
     if stt_mode == "openai":
-        return OpenAIWhisperAPITranscriber(model_name=model_name, language=language)
-    if stt_mode == "groq":
-        return GroqWhisperAPITranscriber(model_name=model_name, language=language)
-    if stt_mode == "local":
-        return LocalWhisperTranscriber(model_name=model_name or DEFAULT_LOCAL_WHISPER_MODEL, language=language)
-    raise ValueError(f"Unknown STT mode: {stt_mode}")
+        inner = OpenAIWhisperAPITranscriber(model_name=model_name, language=language)
+    elif stt_mode == "groq":
+        inner = GroqWhisperAPITranscriber(model_name=model_name, language=language)
+    elif stt_mode == "local":
+        inner = LocalWhisperTranscriber(model_name=model_name or DEFAULT_LOCAL_WHISPER_MODEL, language=language)
+    else:
+        raise ValueError(f"Unknown STT mode: {stt_mode}")
+
+    if filter_hallucinations:
+        return HallucinationFilteringTranscriber(inner)
+    return inner

@@ -22,6 +22,8 @@ export const api = {
 
   getLogs: (limit = 50) => jsonFetch(`/api/logs?limit=${limit}`),
 
+  clearLogs: () => jsonFetch('/api/logs', { method: 'DELETE' }),
+
   intentFromText: (body) =>
     jsonFetch('/api/intent/text', { method: 'POST', body: JSON.stringify(body) }),
 
@@ -55,4 +57,9 @@ export const api = {
 
   execute: (body) =>
     jsonFetch('/api/execute', { method: 'POST', body: JSON.stringify(body) }),
+
+  getScene: () => jsonFetch('/api/scene'),
+
+  saveScene: (objects) =>
+    jsonFetch('/api/scene', { method: 'POST', body: JSON.stringify({ objects }) }),
 }

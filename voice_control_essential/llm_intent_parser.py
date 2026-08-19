@@ -45,6 +45,9 @@ Allowed executable high-level robot actions:
 Supported non-executable high-level intents:
 - need_food with action find_food and target food
 - object_request with action find_object and a target object
+- vision_control with action follow_person (follow/track someone via the camera)
+- vision_control with action stop_following (stop face-tracking mode)
+- vision_control with action identify_person (who is in front of the camera)
 - unknown with action none
 
 Rules:
@@ -59,6 +62,10 @@ Rules:
   that action. Map it to intent unknown, action none, executable false unless
   the user clearly asks for stop.
 - If the request is a direct supported robot command, use intent robot_control.
+- Interpret "stop", "stop moving", "freeze", "hold on", "do not move",
+  "don't move", "stay still", and "hold still" as action stop, intent
+  robot_control, executable true. A request to simply NOT move (with no
+  direction) is a stop command, not a negation.
 - Interpret "sit down", "lie down", "lay down", "stand down", and "go down"
   as action stand_down.
 - Interpret "stand up", "get up", and "rise up" as action stand_up.
@@ -73,6 +80,13 @@ Rules:
   target food, executable false.
 - If the request asks for an object such as an apple, use intent object_request,
   action find_object, target object name, executable false.
+- If the user asks the robot to follow them, follow a person, track someone, or chase
+  someone, use intent vision_control, action follow_person, executable false. Optional
+  target field contains the person's name if specified (e.g. "follow Alice").
+- If the user asks the robot to stop following or stop tracking, use intent
+  vision_control, action stop_following, executable false.
+- If the user asks who is in front of the robot, who the robot sees, or to identify
+  someone, use intent vision_control, action identify_person, executable false.
 - If the request is not supported, use intent unknown, action none, executable false.
 - Movement actions should have duration 0.8 and need_confirmation true.
 - Stop should be executable true and need_confirmation false.

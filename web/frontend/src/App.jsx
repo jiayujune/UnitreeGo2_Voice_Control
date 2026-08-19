@@ -6,6 +6,7 @@ import ActionPanel from './components/ActionPanel.jsx'
 import CommandLog from './components/CommandLog.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
 import VolumeControl from './components/VolumeControl.jsx'
+import SceneEditor from './components/SceneEditor.jsx'
 
 export default function App() {
   const [config, setConfig] = useState(null)
@@ -15,7 +16,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settings, setSettings] = useState(null)
 
-  const [parser, setParser] = useState('rule')
+  const [parser, setParser] = useState('llm')
   const [stt, setStt] = useState('groq')
   const [voiceOutput, setVoiceOutput] = useState('robot') // browser | robot | off
 
@@ -25,6 +26,16 @@ export default function App() {
       setEvents(data.events || [])
     } catch {
       /* ignore log read errors */
+    }
+  }, [])
+
+  const clearLogs = useCallback(async () => {
+    if (!window.confirm('Clear all command history? This cannot be undone.')) return
+    try {
+      await api.clearLogs()
+      setEvents([])
+    } catch {
+      /* ignore clear errors */
     }
   }, [])
 
@@ -100,6 +111,7 @@ export default function App() {
               onResult={handleResult}
             />
             <ActionPanel movementActions={config.movement_actions} onResult={handleResult} />
+            <SceneEditor />
             <VolumeControl />
           </div>
           <div className="col">
@@ -109,7 +121,7 @@ export default function App() {
               voiceOutput={voiceOutput}
               onExecuted={handleExecuted}
             />
-            <CommandLog events={events} onRefresh={refreshLogs} />
+            <CommandLog events={events} onRefresh={refreshLogs} onClear={clearLogs} />
           </div>
         </main>
       )}

@@ -67,6 +67,21 @@ export default function CommandConsole({ config, parser, setParser, llmProvider,
 
   async function startRecording() {
     setError('')
+
+    // Browsers expose getUserMedia only in a "secure context": HTTPS or
+    // localhost/127.0.0.1. Opening the app via a LAN IP over http makes
+    // navigator.mediaDevices undefined, which looks like a broken mic.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      const viaIp = !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)
+      setError(
+        viaIp
+          ? `Microphone blocked: open the app at http://localhost:5173 (not ${location.hostname}). ` +
+            'Browsers disable the mic on http pages that are not localhost.'
+          : 'Microphone unavailable: this browser does not expose getUserMedia. Try Firefox or Chrome.',
+      )
+      return
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const recorder = new MediaRecorder(stream)
@@ -81,7 +96,15 @@ export default function CommandConsole({ config, parser, setParser, llmProvider,
       recorder.start()
       setRecording(true)
     } catch (err) {
-      setError(`Microphone unavailable: ${err.message}`)
+      const hints = {
+        NotAllowedError:
+          'permission denied. Click the 🔒 / camera icon in the address bar, allow the microphone, then retry.',
+        NotFoundError: 'no microphone found. Check your input device in system Sound settings.',
+        NotReadableError:
+          'the microphone is busy in another app (e.g. the voice CLI or another tab). Close it and retry.',
+        SecurityError: 'blocked by the browser. Open the app at http://localhost:5173 (not an IP).',
+      }
+      setError(`Microphone unavailable: ${hints[err.name] || err.message} [${err.name}]`)
     }
   }
 

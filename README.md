@@ -22,8 +22,14 @@ runtime/                   本地临时录音、日志、测试输出
 ```bash
 cd voice_control_essential
 python3 local_voice_to_robot_ssh.py --text "go two stand up" --speech-output off
+python3 local_voice_to_robot_ssh.py --text "go forward then turn right"   # 复合命令: 依次执行
 python3 local_voice_to_robot_ssh.py --input-mode vad --stt groq --parser llm --llm-provider groq --speech-output robot-fallback
+
+# 说话人门禁: 只有注册过的授权说话人能控制机器人
+python3 local_voice_to_robot_ssh.py --enroll your_name          # 先录几条自己的声音注册
+python3 local_voice_to_robot_ssh.py --input-mode vad --stt groq --parser llm --speaker-gate on
 python3 voice_intent_eval.py --parser rule --limit 5 --record-seconds 2.5
+python3 voice_intent_eval.py --text-only --parser rule   # 无需麦克风的快速回归测试(含误触发负例)
 ```
 
 使用 Groq API 时先设置：

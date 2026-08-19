@@ -39,8 +39,63 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
+# Connectives that chain several commands in one utterance, e.g.
+# "go forward then turn right" or "stand up and balance".
+SEQUENCE_DELIMITER_RE = re.compile(
+    r"\s*,\s*"
+    r"|\s+and\s+then\s+|\s+then\s+|\s+after\s+that\s+|\s+afterwards\s+"
+    r"|\s+next\s+|\s+followed\s+by\s+|\s+and\s+"
+)
+LEADING_CONNECTIVE_RE = re.compile(
+    r"^(?:and\s+then|then|after\s+that|afterwards|next|followed\s+by|and)\s+"
+)
+
+
+def split_command_segments(text: str):
+    """Split a possibly-compound utterance into ordered command segments.
+
+    Returns a single-element list when no connective is present, so callers can
+    treat the no-sequence case exactly as before.
+    """
+    normalized = re.sub(r"\s+", " ", str(text).lower().strip())
+    segments = [LEADING_CONNECTIVE_RE.sub("", seg).strip()
+                for seg in SEQUENCE_DELIMITER_RE.split(normalized)]
+    segments = [seg for seg in segments if seg]
+    return segments or [normalized]
+
+
 def has_negated_action(text: str) -> bool:
     return any(re.search(pattern, text) for pattern in NEGATED_ACTION_PATTERNS)
+
+
+def _has_word(text: str, phrase: str) -> bool:
+    """Match a phrase on word boundaries so short tokens do not fire inside
+    unrelated words (e.g. "back" must not match "come back later" as a command;
+    "left" must not match "I left my keys")."""
+    pattern = r"\b" + r"\s+".join(re.escape(word) for word in phrase.split()) + r"\b"
+    return re.search(pattern, text) is not None
+
+
+def _has_any(text: str, phrases) -> bool:
+    return any(_has_word(text, phrase) for phrase in phrases)
+
+
+# Directional movement requires an explicit motion verb next to the direction,
+# so a bare "left"/"right"/"back" in ordinary speech does not trigger a command.
+FORWARD_RE = re.compile(
+    r"\b(go|move|walk|step|head|run|drive)\s+(two\s+)?forward\b"
+    r"|\b(move|walk|step)\s+ahead\b"
+    r"|^(forward|for word|foreword)$"
+)
+BACKWARD_RE = re.compile(
+    r"\b(backward|back up|(go|move|walk|step|head)\s+(two\s+)?back)\b"
+)
+TURN_LEFT_RE = re.compile(
+    r"\b(turn|rotate|spin|veer|go|move|step|head)\s+(to\s+)?(your\s+|the\s+|two\s+)?left\b"
+)
+TURN_RIGHT_RE = re.compile(
+    r"\b(turn|rotate|spin|veer|go|move|step|head)\s+(to\s+)?(your\s+|the\s+|two\s+)?right\b"
+)
 
 
 def apply_safety_rules(intent: dict) -> dict:
@@ -132,8 +187,38 @@ def parse_intent(text: str) -> dict:
             reason="Negated robot action detected. No command will be executed.",
         )
 
+    # ---------- vision / tracking commands (checked before generic stop) ----------
+    if re.search(r"\b(follow|track|come after|chase)\s+(me|him|her|them|that person|that guy|that girl)\b", text):
+        return build_intent(
+            original_text=original_text,
+            intent="vision_control",
+            action="follow_person",
+            executable=False,
+            reason="Face-tracking request detected. Handled by the vision server.",
+        )
+
+    if re.search(r"\b(stop|cease|quit)\s+(following|tracking|chasing)\b"
+                 r"|\bstop follow\b|\bdon't follow\b", text):
+        return build_intent(
+            original_text=original_text,
+            intent="vision_control",
+            action="stop_following",
+            executable=False,
+            reason="Stop-tracking request detected.",
+        )
+
+    if re.search(r"\bwho('s| is| are you)\b|\bwho am i\b"
+                 r"|\b(identify|recognize|do you know me|do you see me)\b", text):
+        return build_intent(
+            original_text=original_text,
+            intent="vision_control",
+            action="identify_person",
+            executable=False,
+            reason="Face identification request detected.",
+        )
+
     # ---------- emergency / stop ----------
-    if any(phrase in text for phrase in [
+    if _has_any(text, [
         "stop",
         "stop moving",
         "hold on",
@@ -150,7 +235,7 @@ def parse_intent(text: str) -> dict:
         )
 
     # ---------- recovery ----------
-    if any(phrase in text for phrase in [
+    if _has_any(text, [
         "recovery",
         "recover",
         "recovery stand",
@@ -164,7 +249,7 @@ def parse_intent(text: str) -> dict:
         )
 
     # ---------- posture commands ----------
-    if any(phrase in text for phrase in [
+    if _has_any(text, [
         "stand up",
         "standup",
         "get up",
@@ -178,7 +263,7 @@ def parse_intent(text: str) -> dict:
             reason="Posture command detected: stand up.",
         )
 
-    if any(phrase in text for phrase in [
+    if _has_any(text, [
         "stand down",
         "standdown",
         "sit down",
@@ -194,7 +279,7 @@ def parse_intent(text: str) -> dict:
             reason="Posture command detected: stand down.",
         )
 
-    if any(phrase in text for phrase in [
+    if _has_any(text, [
         "balance",
         "balance stand",
         "stand still",
@@ -209,15 +294,7 @@ def parse_intent(text: str) -> dict:
         )
 
     # ---------- movement commands ----------
-    if any(phrase in text for phrase in [
-        "forward",
-        "move forward",
-        "go forward",
-        "walk forward",
-        "move ahead",
-        "for word",
-        "foreword",
-    ]):
+    if FORWARD_RE.search(text):
         return build_intent(
             original_text=original_text,
             intent="robot_control",
@@ -228,15 +305,7 @@ def parse_intent(text: str) -> dict:
             reason="Movement command detected. Confirmation is required before execution.",
         )
 
-    if any(phrase in text for phrase in [
-        "backward",
-        "move backward",
-        "go backward",
-        "walk backward",
-        "move back",
-        "go back",
-        "back",
-    ]):
+    if BACKWARD_RE.search(text):
         return build_intent(
             original_text=original_text,
             intent="robot_control",
@@ -247,11 +316,7 @@ def parse_intent(text: str) -> dict:
             reason="Movement command detected. Confirmation is required before execution.",
         )
 
-    if any(phrase in text for phrase in [
-        "turn left",
-        "left",
-        "rotate left",
-    ]):
+    if TURN_LEFT_RE.search(text):
         return build_intent(
             original_text=original_text,
             intent="robot_control",
@@ -262,11 +327,7 @@ def parse_intent(text: str) -> dict:
             reason="Turning command detected. Confirmation is required before execution.",
         )
 
-    if any(phrase in text for phrase in [
-        "turn right",
-        "right",
-        "rotate right",
-    ]):
+    if TURN_RIGHT_RE.search(text):
         return build_intent(
             original_text=original_text,
             intent="robot_control",
@@ -278,7 +339,7 @@ def parse_intent(text: str) -> dict:
         )
 
     # ---------- high-level human intent ----------
-    if any(phrase in text for phrase in [
+    if _has_any(text, [
         "i am hungry",
         "i'm hungry",
         "i need food",
@@ -295,7 +356,7 @@ def parse_intent(text: str) -> dict:
             reason="High-level human intent detected. The current robot setup requires perception and possibly manipulation before this task can be executed.",
         )
 
-    if any(phrase in text for phrase in [
+    if _has_any(text, [
         "apple",
         "find the apple",
         "get the apple",

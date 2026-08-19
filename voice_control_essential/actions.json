@@ -1,0 +1,37 @@
+{
+  "default_bindings": [
+    {
+      "controller_type": "vive_controller",
+      "binding_url": "bindings_vive_controller.json"
+    }
+  ],
+  "actions": [
+    {
+      "name": "/actions/robot/in/trackpad",
+      "type": "vector2"
+    },
+    {
+      "name": "/actions/robot/in/trackpad_touch",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/robot/in/trigger",
+      "type": "vector1"
+    }
+  ],
+  "action_sets": [
+    {
+      "name": "/actions/robot",
+      "usage": "leftright"
+    }
+  ],
+  "localization": [
+    {
+      "language_tag": "en_US",
+      "/actions/robot": "Robot Control",
+      "/actions/robot/in/trackpad": "Trackpad Direction",
+      "/actions/robot/in/trackpad_touch": "Trackpad Touch",
+      "/actions/robot/in/trigger": "Trigger"
+    }
+  ]
+}

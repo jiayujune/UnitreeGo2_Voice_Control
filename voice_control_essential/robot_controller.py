@@ -67,9 +67,18 @@ class RobotController:
         print(f"[RobotController] Move vx={vx}, vy={vy}, vyaw={vyaw}, duration={duration}")
         self.balance_stand()
         time.sleep(0.5)
-        ret = self.sport_client.Move(vx, vy, vyaw)
+
+        # Move() is a velocity command guarded by a short safety watchdog on the
+        # robot: if it is not refreshed within tens of milliseconds the controller
+        # stops to be safe. Sending it once and sleeping makes the robot only
+        # twitch. Resend it continuously at ~20 Hz for the whole duration, then stop.
+        interval = 0.05
+        end = time.monotonic() + duration
+        ret = 0
+        while time.monotonic() < end:
+            ret = self.sport_client.Move(vx, vy, vyaw)
+            time.sleep(interval)
         print("[RobotController] Move ret:", ret)
-        time.sleep(duration)
         self.stop()
         return ret
 

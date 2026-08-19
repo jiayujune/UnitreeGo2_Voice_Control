@@ -1,0 +1,40 @@
+{
+  "name": "Go2 Robot Control - VIVE Wand",
+  "controller_type": "vive_controller",
+  "bindings": {
+    "/actions/robot": {
+      "sources": [
+        {
+          "path": "/user/hand/left/input/trackpad",
+          "mode": "joystick",
+          "inputs": {
+            "position": {"output": "/actions/robot/in/trackpad"},
+            "touch":    {"output": "/actions/robot/in/trackpad_touch"}
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trackpad",
+          "mode": "joystick",
+          "inputs": {
+            "position": {"output": "/actions/robot/in/trackpad"},
+            "touch":    {"output": "/actions/robot/in/trackpad_touch"}
+          }
+        },
+        {
+          "path": "/user/hand/left/input/trigger",
+          "mode": "trigger",
+          "inputs": {
+            "pull": {"output": "/actions/robot/in/trigger"}
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trigger",
+          "mode": "trigger",
+          "inputs": {
+            "pull": {"output": "/actions/robot/in/trigger"}
+          }
+        }
+      ]
+    }
+  }
+}

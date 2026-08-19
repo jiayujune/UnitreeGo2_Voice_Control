@@ -217,3 +217,70 @@ tr:last-child td { border-bottom: none; }
 .vol-slider::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; cursor: pointer; }
 .vol-ticks { display: flex; justify-content: space-between; margin: 8px 4px 0; font-size: 11px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
 .vol-ticks .on { color: var(--accent); font-weight: 700; }
+
+/* Multi-command sequence ("forward and turn right") */
+.seq-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.seq-step { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--text); }
+.seq-step.running { color: var(--accent); font-weight: 700; }
+.seq-step.done { color: #38b000; }
+.seq-step.failed { color: #d00000; }
+.seq-step.pending { color: var(--muted); }
+
+/* ---- world-model verdict + scene editor ---- */
+.verdict.assumed { background: rgba(47,129,247,0.16); color: #7cb3ff; }
+
+.scene-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.scene-head h2 { margin: 0 0 6px; }
+.scene-status { font-size: 12px; }
+.scene-sub { font-size: 12px; margin: 0 0 12px; line-height: 1.45; }
+
+.scene-svg {
+  width: 100%; max-width: 360px; display: block; margin: 0 auto;
+  background: radial-gradient(circle at 50% 50%, #131a24 0%, var(--panel-2) 70%);
+  border: 1px solid var(--border); border-radius: 10px; touch-action: none;
+}
+.scene-ring { fill: none; stroke: var(--border); stroke-width: 1; }
+.scene-ring-label { fill: var(--muted); font-size: 9px; opacity: 0.7; }
+.scene-axis { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 4; opacity: 0.6; }
+.scene-front { fill: var(--accent); opacity: 0.9; }
+.scene-front-label { fill: var(--accent); font-size: 10px; letter-spacing: 0.5px; }
+.scene-robot { fill: rgba(47,129,247,0.18); stroke: var(--accent); stroke-width: 1.5; }
+.scene-link { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.5; }
+.scene-obj { cursor: grab; }
+.scene-obj:active { cursor: grabbing; }
+.scene-obj-dot { fill: var(--panel); stroke: var(--accent); stroke-width: 1.5; }
+.scene-obj:hover .scene-obj-dot { fill: var(--panel-2); stroke: #7cb3ff; }
+
+.scene-palette { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; }
+.chip.danger { color: #ff7b7b; }
+.chip.danger:hover { border-color: var(--red); color: #ffb4b4; }
+
+.scene-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.scene-list li {
+  display: flex; align-items: center; gap: 8px; padding: 5px 0;
+  border-top: 1px solid var(--border); font-size: 13px;
+}
+.scene-list li .muted { margin-left: auto; font-size: 12px; }
+.scene-list-name { text-transform: capitalize; }
+
+/* ---- collapsible command history ---- */
+.log-toggle {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  background: none; border: none; color: var(--text); padding: 0;
+}
+.log-toggle h2 { margin: 0; }
+.log-toggle .caret { color: var(--muted); font-size: 12px; width: 12px; }
+.log-count {
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 1px 8px;
+}
+.log-actions { display: flex; gap: 8px; }
+.btn.danger { color: #ff7b7b; }
+.btn.danger:hover:not(:disabled) { border-color: var(--red); color: #ffb4b4; }
+
+/* per-object delete button on the scene canvas */
+.scene-del { cursor: pointer; }
+.scene-del-dot { fill: var(--red); stroke: var(--bg); stroke-width: 1.5; opacity: 0.85; }
+.scene-del:hover .scene-del-dot { opacity: 1; }
+.scene-del-x { fill: #fff; font-size: 9px; font-weight: 700; pointer-events: none; }

@@ -17,7 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 DEFAULT_LOG = "voice_command_log.jsonl"
-LATENCY_KEYS = ("stt_ms", "parse_ms", "total_ms")
+LATENCY_KEYS = ("stt_ms", "parse_ms", "send_ms", "total_ms")
 
 
 def load_events(path: Path):
@@ -103,7 +103,7 @@ def print_report(report):
     print("\n[Latency, ms]")
     lat = report["latency_ms"]
     print(f"  {'stage':<10}{'n':>5}{'mean':>9}{'median':>9}{'p95':>9}{'min':>9}{'max':>9}")
-    labels = {"stt_ms": "STT", "parse_ms": "intent", "total_ms": "total"}
+    labels = {"stt_ms": "STT", "parse_ms": "intent", "send_ms": "ssh send", "total_ms": "total"}
     any_lat = False
     for key in LATENCY_KEYS:
         s = lat.get(key)

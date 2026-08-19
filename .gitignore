@@ -54,6 +54,14 @@ external/unitree_mujoco/simulate/mujoco
 # Generated evaluation / metrics reports and local profiles/datasets
 *_report.json
 Speaker_Recognition/speaker_profiles.json
+# Personal voiceprints for the speaker gate — sensitive, do not commit
+voice_control_essential/authorized_speakers.json
 Speaker_Recognition/dataset/
 Speaker_Recognition/_data/
 Speaker_Recognition/libri_dataset/
+
+# Coursework unrelated to this project
+homework/
+
+# DreamerV3 / SheepRL third-party libraries (large, install separately)
+world_model/

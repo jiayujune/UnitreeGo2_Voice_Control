@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import csv
 import json
 import os
@@ -10,7 +11,7 @@ import subprocess
 from datetime import datetime, timezone
 
 from audio_pipeline import SileroVADRecorder, record_fixed_duration
-from intent_parser import clean_text, parse_intent
+from intent_parser import clean_text, parse_intent, split_command_segments
 from llm_intent_parser import get_provider_config, parse_intent_with_llm
 from task_planner import plan_from_intent
 from transcriber import build_transcriber
@@ -22,6 +23,15 @@ ROBOT_PYTHON = "/home/unitree/go2_sdk_venv/bin/python"
 ROBOT_SPEAKER_URL = "http://192.168.1.200:8000/say"
 NETWORK_INTERFACE = "eth0"
 
+# Plain SSH does not source ~/.bashrc, so the robot-side cyclonedds binding loads
+# the wrong libddsc and any DDS write (motion command) segfaults. Export the
+# correct CycloneDDS paths in every robot command. See docs/go2-audio-output-issue.md.
+CYCLONEDDS_HOME = "/home/unitree/cyclonedds_ws/install/cyclonedds"
+ROBOT_ENV_PREFIX = (
+    f"export CYCLONEDDS_HOME={CYCLONEDDS_HOME} && "
+    f"export LD_LIBRARY_PATH={CYCLONEDDS_HOME}/lib:$LD_LIBRARY_PATH && "
+)
+
 AUDIO_FILE = "local_command.wav"
 COMMAND_LOG_FILE = "voice_command_log.jsonl"
 COMMAND_CSV_LOG_FILE = "voice_command_log.csv"
@@ -31,6 +41,21 @@ SAMPLE_RATE = 16000
 STT_LANGUAGE = "en"
 SPEECH_COMMAND = "spd-say"
 PRE_COMMAND_SPEECH_DELAY_SECONDS = 1.0
+SSH_COMMAND_TIMEOUT_SECONDS = 20.0
+MAX_SEQUENCE_COMMANDS = 4
+
+# Reuse one multiplexed SSH connection across commands so each command skips the
+# TCP + auth handshake (~hundreds of ms). The master is opened once and kept
+# alive by ControlPersist; subsequent ssh calls ride the same socket.
+SSH_CONTROL_PATH = os.path.expanduser("~/.ssh/cm-go2-voice-%C")
+SSH_CONTROL_PERSIST_SECONDS = 120
+SSH_BASE_OPTS = [
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=5",
+    "-o", "ControlMaster=auto",
+    "-o", f"ControlPath={SSH_CONTROL_PATH}",
+    "-o", f"ControlPersist={SSH_CONTROL_PERSIST_SECONDS}",
+]
 ROBOT_COMMAND_STT_PROMPT = (
     "The speaker will say one robot command or high-level request: "
     "go two stop, go two balance, go two stand up, go two stand down, "
@@ -160,6 +185,7 @@ def log_intent_event(
         "parser_mode": parser_mode,
         "stt_ms": timings.get("stt_ms"),
         "parse_ms": timings.get("parse_ms"),
+        "send_ms": timings.get("send_ms"),
         "total_ms": timings.get("total_ms"),
     }
 
@@ -186,6 +212,7 @@ def log_intent_event(
         "reason": intent.get("reason", ""),
         "stt_ms": timings.get("stt_ms"),
         "parse_ms": timings.get("parse_ms"),
+        "send_ms": timings.get("send_ms"),
         "total_ms": timings.get("total_ms"),
     }
 
@@ -196,8 +223,43 @@ def log_intent_event(
         writer.writerow(csv_row)
 
 
+def warm_ssh_connection():
+    """Open the multiplexed SSH master connection ahead of time so the first
+    real command does not pay the full handshake. Best-effort: a failure here
+    just means commands fall back to opening their own connection (and will
+    report honestly if the robot is unreachable)."""
+    try:
+        result = subprocess.run(
+            ["ssh", *SSH_BASE_OPTS, ROBOT_SSH, "true"],
+            check=False,
+            timeout=SSH_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"SSH warm-up timed out. Robot may be offline at {ROBOT_SSH}.")
+        return False
+
+    if result.returncode != 0:
+        print(f"SSH warm-up failed (exit code {result.returncode}). "
+              f"Commands will still be attempted when needed.")
+        return False
+
+    print(f"SSH connection to {ROBOT_SSH} is warm (multiplexed, reused for commands).")
+    return True
+
+
+def close_ssh_connection():
+    """Tear down the shared SSH master socket on exit."""
+    subprocess.run(
+        ["ssh", "-O", "exit", "-o", f"ControlPath={SSH_CONTROL_PATH}", ROBOT_SSH],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def send_command_to_robot(command, duration=0.0):
     remote_cmd = (
+        f"{ROBOT_ENV_PREFIX}"
         f"cd {ROBOT_PROJECT_DIR} && "
         f"{ROBOT_PYTHON} robot_command_once.py {NETWORK_INTERFACE} {command} {duration:.2f}"
     )
@@ -206,10 +268,23 @@ def send_command_to_robot(command, duration=0.0):
     print(command)
     print("Duration:", duration)
 
-    subprocess.run(
-        ["ssh", ROBOT_SSH, remote_cmd],
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["ssh", *SSH_BASE_OPTS, ROBOT_SSH, remote_cmd],
+            check=False,
+            timeout=SSH_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"\nSSH command timed out after {SSH_COMMAND_TIMEOUT_SECONDS}s. "
+              f"Is the robot reachable at {ROBOT_SSH}?")
+        return False
+
+    if result.returncode != 0:
+        print(f"\nSSH command failed (exit code {result.returncode}). "
+              "Command was NOT executed on the robot.")
+        return False
+
+    return True
 
 
 def parse_with_mode(text, parser_mode, llm_provider=None, llm_model=None):
@@ -284,6 +359,114 @@ def generate_chat_reply(text, llm_provider=None, llm_model=None):
     return " ".join(reply.split())
 
 
+def _sequence_timings(stt_ms, parse_ms, send_ms=None, is_first=False):
+    """Per-command timings inside a sequence. STT latency is attributed only to
+    the first command so it is not counted once per segment in the metrics."""
+    stt_part = round(stt_ms, 1) if (stt_ms is not None and is_first) else None
+    total = (stt_ms or 0.0 if is_first else 0.0) + parse_ms + (send_ms or 0.0)
+    timings = {
+        "stt_ms": stt_part,
+        "parse_ms": round(parse_ms, 1),
+        "total_ms": round(total, 1),
+    }
+    if send_ms is not None:
+        timings["send_ms"] = round(send_ms, 1)
+    return timings
+
+
+def process_sequence(
+    segments,
+    *,
+    dry_run,
+    parser_mode,
+    llm_provider,
+    llm_model,
+    speech_output,
+    stt_ms,
+):
+    """Execute several commands from one utterance, in order. Returns True if it
+    handled the input; False if no executable command was found (so the caller
+    can fall back to single-command handling on the whole transcript)."""
+    parsed = []
+    for segment in segments:
+        parse_start = time.perf_counter()
+        intent = parse_with_mode(segment, parser_mode, llm_provider, llm_model)
+        parse_ms = (time.perf_counter() - parse_start) * 1000.0
+        parsed.append((segment, intent, parse_ms))
+
+    executable = [(s, i, m) for (s, i, m) in parsed if i.get("executable", False)]
+    if not executable:
+        return False
+
+    skipped = [s for (s, i, _) in parsed if not i.get("executable", False)]
+    if skipped:
+        print("\nSkipping unrecognized parts of the sequence:", skipped)
+
+    if len(executable) > MAX_SEQUENCE_COMMANDS:
+        print(f"\nSequence has {len(executable)} commands; running only the first "
+              f"{MAX_SEQUENCE_COMMANDS} for safety.")
+        executable = executable[:MAX_SEQUENCE_COMMANDS]
+
+    labels = [robot_action_label(i.get("action")) for (_, i, _) in executable]
+    plan_sentence = ", then ".join(labels)
+    print("\nCommand sequence:", " -> ".join(labels))
+
+    def log_each(send_ms_list, sent_flags):
+        for idx, (segment, intent, parse_ms) in enumerate(executable):
+            log_intent_event(
+                segment,
+                intent,
+                sent_to_robot=sent_flags[idx],
+                sent_command=intent.get("action"),
+                dry_run=dry_run,
+                parser_mode=parser_mode,
+                timings=_sequence_timings(
+                    stt_ms, parse_ms, send_ms_list[idx], is_first=(idx == 0)
+                ),
+            )
+
+    if dry_run:
+        print(f"\nDRY RUN: would run sequence: {plan_sentence}")
+        speak(f"Dry run. I would {plan_sentence}.", speech_output)
+        log_each([None] * len(executable), [False] * len(executable))
+        return True
+
+    if any(i.get("need_confirmation", False) for (_, i, _) in executable):
+        confirm = input(f"Run command sequence [{plan_sentence}]? Type yes: ")
+        if confirm.strip().lower() != "yes":
+            print("Cancelled.")
+            speak("Cancelled.", speech_output)
+            return True
+
+    speech_ok = speak(f"Okay. I will {plan_sentence}.", speech_output)
+    if speech_output == "robot" and not speech_ok:
+        print("\nRobot speech did not complete. Sequence was not sent.")
+        return True
+    if speech_output in {"computer", "robot-fallback"}:
+        time.sleep(PRE_COMMAND_SPEECH_DELAY_SECONDS)
+
+    send_ms_list = [None] * len(executable)
+    sent_flags = [False] * len(executable)
+    for idx, (segment, intent, parse_ms) in enumerate(executable):
+        action = intent.get("action")
+        duration = float(intent.get("duration", 0.0))
+        send_start = time.perf_counter()
+        sent_ok = send_command_to_robot(action, duration=duration)
+        send_ms_list[idx] = (time.perf_counter() - send_start) * 1000.0
+        sent_flags[idx] = sent_ok
+
+        if not sent_ok:
+            print("Aborting remaining sequence: robot unreachable.")
+            speak("I could not reach the robot.", speech_output)
+            break
+        if action == "stop":
+            print("Stop command reached; halting the rest of the sequence.")
+            break
+
+    log_each(send_ms_list, sent_flags)
+    return True
+
+
 def process_transcript(
     text,
     dry_run=False,
@@ -294,6 +477,24 @@ def process_transcript(
     speech_output="computer",
     stt_ms=None,
 ):
+    segments = split_command_segments(text)
+    if len(segments) > 1:
+        print("\nDetected a multi-command utterance:")
+        print(text)
+        handled = process_sequence(
+            segments,
+            dry_run=dry_run,
+            parser_mode=parser_mode,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            speech_output=speech_output,
+            stt_ms=stt_ms,
+        )
+        if handled:
+            return
+        print("\nNo executable command found in the sequence; "
+              "parsing the whole utterance instead.")
+
     parse_start = time.perf_counter()
     intent = parse_with_mode(text, parser_mode, llm_provider, llm_model)
     parse_ms = (time.perf_counter() - parse_start) * 1000.0
@@ -398,11 +599,17 @@ def process_transcript(
     if speech_output in {"computer", "robot-fallback"}:
         time.sleep(PRE_COMMAND_SPEECH_DELAY_SECONDS)
 
-    send_command_to_robot(command, duration=duration)
+    send_start = time.perf_counter()
+    sent_ok = send_command_to_robot(command, duration=duration)
+    send_ms = (time.perf_counter() - send_start) * 1000.0
+    timings["send_ms"] = round(send_ms, 1)
+    timings["total_ms"] = round((stt_ms or 0.0) + parse_ms + send_ms, 1)
+    if not sent_ok:
+        speak("I could not reach the robot.", speech_output)
     log_intent_event(
         text,
         intent,
-        sent_to_robot=True,
+        sent_to_robot=sent_ok,
         sent_command=command,
         dry_run=False,
         parser_mode=parser_mode,
@@ -510,12 +717,81 @@ def parse_args():
         default=250,
         help="Minimum speech duration required before transcribing a VAD clip.",
     )
+    parser.add_argument(
+        "--speaker-gate",
+        choices=["off", "on"],
+        default="off",
+        help="Require an enrolled, recognized speaker before any command runs.",
+    )
+    parser.add_argument(
+        "--speaker-encoder",
+        choices=["mfcc", "resemblyzer"],
+        default="resemblyzer",
+        help="Embedding model for the speaker gate (resemblyzer is far more accurate).",
+    )
+    parser.add_argument(
+        "--speaker-profiles",
+        default=None,
+        help="Path to authorized-speaker profiles (default: authorized_speakers.json).",
+    )
+    parser.add_argument(
+        "--speaker-threshold",
+        type=float,
+        default=0.75,
+        help="Cosine similarity threshold for accepting a speaker.",
+    )
+    parser.add_argument(
+        "--enroll",
+        metavar="SPEAKER_ID",
+        help="Enrollment mode: record clips of a voice, save it as an authorized speaker, then exit.",
+    )
+    parser.add_argument(
+        "--enroll-clips",
+        type=int,
+        default=3,
+        help="Number of clips to record during --enroll.",
+    )
     return parser.parse_args()
+
+
+def run_enrollment(args):
+    """Record a few clips of a voice and save it as an authorized speaker."""
+    import speaker_gate
+
+    profiles = args.speaker_profiles or speaker_gate.DEFAULT_PROFILES
+    gate = speaker_gate.build_gate(
+        encoder=args.speaker_encoder,
+        profiles_path=profiles,
+        threshold=args.speaker_threshold,
+    )
+    print(f"\nEnrolling '{args.enroll}' — {args.enroll_clips} clip(s), encoder={args.speaker_encoder}.")
+    print("Speak naturally, as you would when commanding the robot.")
+    saved = 0
+    for i in range(args.enroll_clips):
+        input(f"\n[{i + 1}/{args.enroll_clips}] Press Enter, then speak for ~{RECORD_SECONDS:.0f}s...")
+        record_audio()
+        try:
+            profile = gate.enroll_file(args.enroll, AUDIO_FILE)
+            saved += 1
+            print(f"  clip {i + 1} enrolled (total samples for {args.enroll}: {profile.sample_count}).")
+        except Exception as exc:  # noqa: BLE001 - report and keep going
+            print(f"  clip {i + 1} skipped: {exc}")
+
+    if saved:
+        print(f"\nDone. Authorized speakers: {', '.join(speaker_gate.authorized_speakers(gate))}")
+        print(f"Profiles saved to: {profiles}")
+    else:
+        print("\nNo clips were enrolled (no speech detected). Nothing saved.")
 
 
 def main():
     args = parse_args()
     speech_output = "off" if args.no_speech else args.speech_output
+
+    if args.enroll:
+        run_enrollment(args)
+        return
+
     global RECORD_SECONDS
     global ROBOT_SPEAKER_URL
     RECORD_SECONDS = args.record_seconds
@@ -548,11 +824,33 @@ def main():
             silence_ms=args.vad_silence_ms,
         )
 
+    gate = None
+    if args.speaker_gate == "on":
+        import speaker_gate
+
+        gate = speaker_gate.build_gate(
+            encoder=args.speaker_encoder,
+            profiles_path=args.speaker_profiles or speaker_gate.DEFAULT_PROFILES,
+            threshold=args.speaker_threshold,
+        )
+        speakers = speaker_gate.authorized_speakers(gate)
+        if not speakers:
+            print("\nSpeaker gate is ON but no authorized speakers are enrolled.")
+            print("Enroll yourself first, e.g.:")
+            print("  python local_voice_to_robot_ssh.py --enroll your_name")
+            print("Disabling the speaker gate for this session.")
+            gate = None
+        else:
+            print(f"\nSpeaker gate ON — authorized: {', '.join(speakers)} "
+                  f"(encoder={args.speaker_encoder}, threshold={args.speaker_threshold}).")
+
     if args.dry_run:
         print(f"\nComputer microphone -> {args.input_mode} capture -> {args.stt} STT -> intent JSON")
         print("DRY RUN MODE: no SSH commands will be sent.")
     else:
         print(f"\nComputer microphone -> {args.input_mode} capture -> {args.stt} STT -> SSH -> robot")
+        atexit.register(close_ssh_connection)
+        warm_ssh_connection()
 
     print("Press Ctrl+C to quit.")
 
@@ -563,12 +861,25 @@ def main():
         if audio_path is None:
             continue
 
+        if gate is not None:
+            import speaker_gate
+
+            speaker_id, score = speaker_gate.identify(gate, audio_path)
+            if speaker_id is None:
+                print(f"Speaker not recognized (best score {score:.2f}). Command ignored.")
+                speak("Sorry, I do not recognize your voice.", speech_output)
+                continue
+            print(f"Speaker recognized: {speaker_id} (score {score:.2f}) — authorized.")
+
         stt_start = time.perf_counter()
         text = transcriber.transcribe(
             audio_path,
             prompt=ROBOT_COMMAND_STT_PROMPT,
         )
         stt_ms = (time.perf_counter() - stt_start) * 1000.0
+        if not text.strip():
+            print("No usable speech recognized (empty or filtered). Listening again.")
+            continue
         process_transcript(
             text,
             dry_run=args.dry_run,

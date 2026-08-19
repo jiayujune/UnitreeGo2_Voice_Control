@@ -134,6 +134,22 @@ TEST_PROMPTS = [
 ]
 
 
+# Sentences that contain command-like substrings but are NOT robot commands.
+# These guard against the rule parser firing on bare "back"/"left"/"right"/etc.
+# inside ordinary speech. None of them should be executable.
+NEGATIVE_PROMPTS = [
+    {"text": "please come back later", "expected": {"executable": False}},
+    {"text": "turn the light on the left", "expected": {"executable": False}},
+    {"text": "I left my keys on the table", "expected": {"executable": False}},
+    {"text": "that is right", "expected": {"executable": False}},
+    {"text": "you are right about that", "expected": {"executable": False}},
+    {"text": "I have a background in music", "expected": {"executable": False}},
+    {"text": "I would like some pineapple juice", "expected": {"executable": False}},
+    {"text": "the meeting is moved forward to Monday", "expected": {"executable": False}},
+    {"text": "I am looking forward to it", "expected": {"executable": False}},
+]
+
+
 def matches_expected(intent, expected):
     return all(intent.get(key) == value for key, value in expected.items())
 
@@ -209,7 +225,57 @@ def parse_args():
         "--llm-model",
         help="Model to use with --parser llm. Can also be set with LLM_MODEL.",
     )
+    parser.add_argument(
+        "--text-only",
+        action="store_true",
+        help="Skip the microphone and Whisper. Run the parser directly on each "
+             "prompt's text, including the negative (false-positive) prompts. "
+             "Fast, deterministic regression check for the intent parser.",
+    )
     return parser.parse_args()
+
+
+def run_text_only(args):
+    """Mic-free parser regression check over positive and negative prompts."""
+    cases = [(i, item, True) for i, item in enumerate(TEST_PROMPTS, start=1)]
+    cases += [(i, item, False) for i, item in enumerate(NEGATIVE_PROMPTS, start=1)]
+
+    print("Text-only intent parser evaluation (no microphone, no Whisper).")
+    print(f"Intent parser: {args.parser}")
+    print(f"Positive prompts: {len(TEST_PROMPTS)} | Negative prompts: {len(NEGATIVE_PROMPTS)}")
+
+    passed_count = 0
+    failures = []
+    for number, item, is_positive in cases:
+        transcript = item["text"]
+        expected = item["expected"]
+        intent = parse_with_mode(
+            transcript,
+            args.parser,
+            llm_provider=args.llm_provider,
+            llm_model=args.llm_model,
+        )
+        passed = matches_expected(intent, expected)
+        if passed:
+            passed_count += 1
+        else:
+            failures.append((is_positive, transcript, expected, intent))
+
+        label = "POS" if is_positive else "NEG"
+        status = "PASS" if passed else "FAIL"
+        print(f"[{label} #{number}] {status}: {transcript!r} -> "
+              f"action={intent.get('action')} executable={intent.get('executable')}")
+
+    total = len(cases)
+    print(f"\nPassed: {passed_count}/{total}")
+    if failures:
+        print("\nFailures:")
+        for is_positive, transcript, expected, intent in failures:
+            print(f"  [{'POS' if is_positive else 'NEG'}] {transcript!r}")
+            print(f"      expected {expected}")
+            print(f"      actual   action={intent.get('action')} "
+                  f"intent={intent.get('intent')} executable={intent.get('executable')}")
+    return passed_count == total
 
 
 def select_prompts(limit, indexes):
@@ -225,6 +291,11 @@ def select_prompts(limit, indexes):
 
 def main():
     args = parse_args()
+
+    if args.text_only:
+        all_passed = run_text_only(args)
+        raise SystemExit(0 if all_passed else 1)
+
     prompts = select_prompts(args.limit, args.indexes)
     local_voice_to_robot_ssh.RECORD_SECONDS = args.record_seconds
 
