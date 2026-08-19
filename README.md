@@ -1,67 +1,100 @@
-# Unitree Go2 Voice Control
+# Unitree Go2 Voice & VR Control
 
-基于语音识别和意图解析的 Unitree Go2 控制项目。系统流程是：
+基于语音识别、意图解析和 VR 沉浸式控制的 Unitree Go2 机器人控制系统。
 
-```text
-麦克风录音 -> Whisper 语音识别 -> 意图解析 -> 安全规则过滤 -> SSH/SDK 控制 Go2
-```
-
-## 目录说明
+## 系统概览
 
 ```text
-voice_control_essential/   主线演示版：VAD -> STT -> intent -> safety -> Go2
-Speaker_Recognition/       说话人识别相关实验模块
-tools/                     小型本地测试脚本，例如录音、VAD、Whisper 测试
-archive/                   旧实验代码归档，不作为当前主线入口
-external/                  Unitree SDK、MuJoCo 等第三方/外部依赖
-runtime/                   本地临时录音、日志、测试输出
+【语音控制】
+麦克风 → VAD → Whisper STT → 意图解析(规则/LLM) → 说话人门禁 → 安全过滤 → Go2
+
+【VR 控制】
+Go2 摄像头(WebRTC) → VIVE Pro 头显实时画面
+VIVE Wand 手柄 → ROS2 Twist → Go2 运动
 ```
 
-## 核心入口
+## 目录结构
+
+```text
+voice_control_essential/   语音控制系统（VAD / STT / 意图解析 / 说话人门禁 / Motion Server）
+vr_control/                VR 沉浸式控制（VIVE Pro 头显 + VIVE Wand 手柄）
+web/                       Web 控制界面（React 前端 + FastAPI 后端）
+Speaker_Recognition/       说话人识别实验模块（MFCC / Resemblyzer / MySQL 存储）
+tools/                     本地测试脚本（录音、VAD、Whisper 测试）
+archive/                   旧实验代码归档
+docs/                      技术文档（CycloneDDS 配置等）
+runtime/                   本地运行时数据（日志、录音，不提交）
+```
+
+## 快速启动
+
+### Go2 Air（WebRTC）—— 语音 + VR 同时运行
+
+```bash
+# 0. 连接机器人 WiFi
+nmcli dev wifi connect "Go2_18636" password "88888888" ifname wlx1cbfce35e632
+
+# 1. ROS2 驱动（Terminal 1）
+source /opt/ros/jazzy/setup.bash && source ~/ros2_ws/install/setup.bash
+export CONN_TYPE=webrtc ROBOT_IP=192.168.12.1
+ros2 launch go2_robot_sdk robot_minimal.launch.py
+
+# 2. Motion Server（Terminal 2）
+source /opt/ros/jazzy/setup.bash && source ~/ros2_ws/install/setup.bash
+cd voice_control_essential
+python3 robot_motion_server_ros2.py
+
+# 3A. 语音控制（Terminal 3）
+python3 local_voice_to_robot_ssh.py --input-mode vad --stt groq \
+  --parser llm --llm-provider groq
+
+# 3B. 或 VR 控制（Terminal 3，需先启动 SteamVR）
+cd ../vr_control
+python3 vr_viewer.py
+
+# 4. 切换 Sport Mode（必须）
+ros2 topic pub /webrtc_req go2_interfaces/msg/WebRtcReq \
+  "{api_id: 1016, topic: 'rt/api/sport/request'}" --once
+```
+
+### 纯文本测试（无麦克风，不连机器人）
 
 ```bash
 cd voice_control_essential
-python3 local_voice_to_robot_ssh.py --text "go two stand up" --speech-output off
-python3 local_voice_to_robot_ssh.py --text "go forward then turn right"   # 复合命令: 依次执行
-python3 local_voice_to_robot_ssh.py --input-mode vad --stt groq --parser llm --llm-provider groq --speech-output robot-fallback
-
-# 说话人门禁: 只有注册过的授权说话人能控制机器人
-python3 local_voice_to_robot_ssh.py --enroll your_name          # 先录几条自己的声音注册
-python3 local_voice_to_robot_ssh.py --input-mode vad --stt groq --parser llm --speaker-gate on
-python3 voice_intent_eval.py --parser rule --limit 5 --record-seconds 2.5
-python3 voice_intent_eval.py --text-only --parser rule   # 无需麦克风的快速回归测试(含误触发负例)
+python3 local_voice_to_robot_ssh.py --text "go two forward" --dry-run
+python3 local_voice_to_robot_ssh.py --text "go forward then turn right" --dry-run
 ```
 
-使用 Groq API 时先设置：
+## 各模块详细文档
+
+- [voice_control_essential/README.md](voice_control_essential/README.md) — 语音控制系统
+- [vr_control/README.md](vr_control/README.md) — VR 沉浸式控制系统
+- [web/README.md](web/README.md) — Web 控制界面
+- [Speaker_Recognition/README.md](Speaker_Recognition/README.md) — 说话人识别
+
+## 说话人门禁
+
+只有已注册声纹的人才能向机器人发送命令：
 
 ```bash
-export GROQ_API_KEY="your_groq_api_key"
+cd voice_control_essential
+python3 local_voice_to_robot_ssh.py --enroll your_name   # 注册声纹
+python3 local_voice_to_robot_ssh.py --input-mode vad --speaker-gate on
 ```
 
-真实控制机器人前，请确认 Go2 与电脑在同一网络，SSH 和 Unitree SDK 环境可用，并保证机器人处于安全可控状态。
-
-## 工具脚本
-
-```bash
-python3 tools/record_test.py --seconds 3 --output runtime/test.wav
-python3 tools/vad_cut.py --input runtime/test.wav --output runtime/speech_segment.wav
-python3 tools/whisper_local_test.py --input runtime/speech_segment.wav
-```
-
-## 指标统计
-
-流水线已记录每条指令的分阶段耗时(STT / 意图解析 / 总时延)。从日志统计时延与指令映射成功率:
+## 流水线时延统计
 
 ```bash
 cd voice_control_essential
 python3 pipeline_metrics.py voice_command_log.jsonl
 ```
 
-说话人识别模块的评测(VAD 精确率/召回率、说话人 top-1、EER、阈值标定):
+## 环境变量
 
-```bash
-python3 -m Speaker_Recognition.evaluate <dataset>
-python3 -m Speaker_Recognition.evaluate --demo   # 合成自测,无需数据
-```
+| 变量 | 说明 |
+|------|------|
+| `GROQ_API_KEY` | Groq STT / LLM 解析 |
+| `OPENAI_API_KEY` | OpenAI STT / LLM 解析 |
+| `GO2_EXECUTE` | 设为 `1` 才真实控制机器人（Web 后端用） |
 
-虚拟环境、录音、日志、缓存和本地配置不应提交。
+使用前请确认机器人处于安全可控状态。
